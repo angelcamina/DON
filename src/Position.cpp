@@ -132,38 +132,6 @@ namespace {
 
 #undef S
 
-    // min_attacker() is an helper function used by see() to locate the least
-    // valuable attacker for the side to move, remove the attacker we just found
-    // from the bitboards and scan for new X-ray attacks behind it.
-    template<PieceT PT>
-    INLINE PieceT min_attacker (const Bitboard *bb, Square dst, Bitboard stm_attackers, Bitboard &occupied, Bitboard &attackers)
-    {
-        Bitboard b = stm_attackers & bb[PT];
-        if (b)
-        {
-            occupied -= (b & ~(b - 1));
-
-            if (PAWN == PT || BSHP == PT || QUEN == PT)
-            {
-                attackers |= attacks_bb<BSHP> (dst, occupied) & (bb[BSHP] | bb[QUEN]);
-            }
-            if (ROOK == PT || QUEN == PT)
-            {
-                attackers |= attacks_bb<ROOK> (dst, occupied) & (bb[ROOK] | bb[QUEN]);
-            }
-            attackers &= occupied; // After X-ray that may add already processed pieces
-
-            return PT;
-        }
-
-        return min_attacker<PieceT(PT+1)> (bb, dst, stm_attackers, occupied, attackers);
-    }
-    template<>
-    INLINE PieceT min_attacker<KING> (const Bitboard*, Square, Bitboard, Bitboard&, Bitboard&)
-    {
-        return KING; // No need to update bitboards, it is the last cycle
-    }
-
     // prefetch() preloads the given address in L1/L2 cache.
     // This is a non-blocking function that doesn't stall
     // the CPU waiting for data to be loaded from memory,
@@ -558,6 +526,35 @@ bool Position::ok (i08 *step) const
     return true;
 }
 
+// least_valuable_attacker() is a helper function used by see()
+// to locate the least valuable attacker for the side to move,
+// remove the attacker we just found from the bitboards and
+// scan for new X-ray attacks behind it.
+template<PieceT PT>
+PieceT Position::least_valuable_attacker (Color c, Square dst, Bitboard &occupied) const
+{
+    Bitboard attacks = (BSHP == PT) ? attacks_bb<BSHP> (dst, occupied)
+        : (ROOK == PT) ? attacks_bb<ROOK> (dst, occupied)
+        : (QUEN == PT) ? attacks_bb<BSHP> (dst, occupied) | attacks_bb<ROOK> (dst, occupied)
+        : (PAWN == PT) ? PawnAttacks[~c][dst]
+        : (NIHT == PT || KING == PT) ? PieceAttacks[PT][dst]
+        : U64 (0);
+
+    attacks &= (_color_bb[c]&_types_bb[PT]) & occupied;
+    if (attacks != U64(0))
+    {
+        occupied ^= (attacks & ~(attacks - 1));
+        return PT;
+    }
+
+    return least_valuable_attacker<PieceT(PT+1)> (c, dst, occupied);
+}
+template<>
+PieceT Position::least_valuable_attacker<NONE>(Color, Square, Bitboard&) const
+{
+    return NONE;
+}
+
 // see() is a Static Exchange Evaluator (SEE):
 // It tries to estimate the material gain or loss resulting from a move.
 Value Position::see (Move m) const
@@ -576,12 +573,14 @@ Value Position::see (Move m) const
     swap_list[0] = PieceValue[MG][ptype (_board[dst])];
 
     Bitboard occupied = _types_bb[NONE] - org;
+    
+    PieceT capturing = ptype (_board[org]);
 
     MoveT mt = mtype (m);
 
     if (mt == CASTLE)
     {
-        // Castle moves are implemented as king capturing the rook so cannot be
+        // Castling moves are implemented as king capturing the rook so cannot be
         // handled correctly. Simply return 0 that is always the correct value
         // unless in the rare case the rook ends up under attack.
         return VALUE_ZERO;
@@ -593,58 +592,40 @@ Value Position::see (Move m) const
         swap_list[0] = PieceValue[MG][PAWN];
     }
 
-    // Find all enemy attackers to the destination square, with the moving piece
-    // removed, but possibly an X-ray attacker added behind it.
-    Bitboard attackers = attackers_to (dst, occupied) & occupied;
-
-    // If the opponent has no attackers we are finished
-    stm = ~stm;
-    Bitboard stm_attackers = attackers & _color_bb[stm];
-    if (stm_attackers != U64(0))
+    do
     {
-        // The destination square is defended, which makes things rather more
-        // difficult to compute. We proceed by building up a "swap list" containing
-        // the material gain or loss at each stop in a sequence of captures to the
-        // destination square, where the sides alternately capture, and always
-        // capture with the least valuable piece. After each capture, we look for
-        // new X-ray attacks from behind the capturing piece.
-        PieceT ct = ptype (_board[org]);
+        ASSERT (depth < 32);
 
-        do
+        PieceT captured = capturing;
+        stm = ~stm;
+
+        // Locate and remove the next least valuable attacker
+        capturing = least_valuable_attacker<PAWN> (stm, dst, occupied);
+        if (capturing == NONE)
         {
-            ASSERT (depth < 32);
-
-            // Add the new entry to the swap list
-            swap_list[depth] = PieceValue[MG][ct] - swap_list[depth - 1];
-
-            // Locate and remove the next least valuable attacker
-            ct  = min_attacker<PAWN> (_types_bb, dst, stm_attackers, occupied, attackers);
-
-            // Stop before processing a king capture
-            if (KING == ct)
-            {
-                if (stm_attackers == attackers)
-                {
-                    ++depth;
-                }
-                break;
-            }
-
-            stm = ~stm;
-            stm_attackers = attackers & _color_bb[stm];
-
-            ++depth;
+            break; // Finished
         }
-        while (stm_attackers != U64(0));
 
-        // Having built the swap list, we negamax through it to find the best
-        // achievable score from the point of view of the side to move.
-        while (--depth > 0)
+        // Add the new entry to the swap list
+        swap_list[depth] = -swap_list[depth - 1] + PieceValue[MG][captured];
+        ++depth;
+
+        // Stop after a king capture
+        if (captured == KING)
         {
-            if (swap_list[depth - 1] > -swap_list[depth])
-            {
-                swap_list[depth - 1] = -swap_list[depth];
-            }
+            swap_list[depth - 1] += 10 * VALUE_MG_QUEN;
+            break;
+        }
+    }
+    while (true);
+
+    // Having built the swap list, we negamax through it to find the best
+    // achievable score from the point of view of the side to move.
+    while (--depth > 0)
+    {
+        if (swap_list[depth - 1] > -swap_list[depth])
+        {
+            swap_list[depth - 1] = -swap_list[depth];
         }
     }
 
@@ -717,7 +698,7 @@ bool Position::pseudo_legal (Move m) const
 
     MoveT mt = mtype (m);
 
-    if      (mt == NORMAL)
+    if      (NORMAL    == mt)
     {
         // Is not a promotion, so promotion piece must be empty
         if (PAWN != (promote (m) - NIHT))
@@ -726,7 +707,7 @@ bool Position::pseudo_legal (Move m) const
         }
         ct = ptype (_board[cap]);
     }
-    else if (mt == CASTLE)
+    else if (CASTLE    == mt)
     {
         // Check whether the destination square is attacked by the opponent.
         // Castling moves are checked for legality during move generation.
@@ -763,7 +744,7 @@ bool Position::pseudo_legal (Move m) const
         //ct = NONE;
         return true;
     }
-    else if (mt == PROMOTE)
+    else if (PROMOTE   == mt)
     {
         if (!( PAWN == pt
             && R_7 == r_org
@@ -774,7 +755,7 @@ bool Position::pseudo_legal (Move m) const
         }
         ct = ptype (_board[cap]);
     }
-    else if (mt == ENPASSANT)
+    else if (ENPASSANT == mt)
     {
         if (!( PAWN == pt
             && _si->en_passant_sq == dst
@@ -811,7 +792,7 @@ bool Position::pseudo_legal (Move m) const
         // cannot be on the 8th/1st rank.
         if (R_1 == r_org || R_8 == r_org) return false;
         if (R_1 == r_dst || R_2 == r_dst) return false;
-        if (mt == NORMAL)
+        if (NORMAL == mt)
         {
             if (R_7 == r_org || R_8 == r_dst) return false;
         }
@@ -893,16 +874,7 @@ bool Position::pseudo_legal (Move m) const
     Bitboard chkrs = checkers ();
     if (chkrs)
     {
-        if (KING == pt)
-        {
-            // In case of king moves under check we have to remove king so to catch
-            // as invalid moves like B1A1 when opposite queen is on C1.
-            if (attackers_to (dst, _types_bb[NONE] - org) & _color_bb[pasive])
-            {
-                return false;
-            }
-        }
-        else
+        if (KING != pt)
         {
             // Double check? In this case a king move is required
             if (more_than_one (chkrs)) return false;
@@ -922,6 +894,15 @@ bool Position::pseudo_legal (Move m) const
                 {
                     return false;
                 }
+            }
+        }
+        else
+        {
+            // In case of king moves under check we have to remove king so to catch
+            // as invalid moves like B1A1 when opposite queen is on C1.
+            if (attackers_to (dst, _types_bb[NONE] - org) & _color_bb[pasive])
+            {
+                return false;
             }
         }
     }
@@ -947,9 +928,8 @@ bool Position::legal        (Move m, Bitboard pinned) const
     Square ksq = _piece_list[_active][KING][0];
 
     MoveT mt = mtype (m);
-
-    if      (mt == NORMAL
-        ||   mt == PROMOTE)
+    if      (NORMAL    == mt
+        ||   PROMOTE   == mt)
     {
         // If the moving piece is a king.
         if (KING == pt)
@@ -967,12 +947,12 @@ bool Position::legal        (Move m, Bitboard pinned) const
             || !(pinned & org)
             || sqrs_aligned (org, dst, ksq);
     }
-    else if (mt == CASTLE)
+    else if (CASTLE    == mt)
     {
         // Castling moves are checked for legality during move generation.
         return (KING == pt);
     }
-    else if (mt == ENPASSANT)
+    else if (ENPASSANT == mt)
     {
         // En-passant captures are a tricky special case. Because they are rather uncommon,
         // we do it simply by testing whether the king is attacked after the move is made.
@@ -1016,11 +996,11 @@ bool Position::gives_check  (Move m, const CheckInfo &ci) const
 
     MoveT mt  = mtype (m);
     // Can we skip the ugly special cases ?
-    if (mt == NORMAL) return false;
+    if (NORMAL == mt) return false;
 
     Bitboard occ = _types_bb[NONE];
 
-    if      (mt == CASTLE)
+    if      (CASTLE    == mt)
     {
         // Castling with check ?
         bool  king_side = (dst > org);
@@ -1032,12 +1012,12 @@ bool Position::gives_check  (Move m, const CheckInfo &ci) const
             (PieceAttacks[ROOK][dst_rook] & ci.king_sq) && // First x-ray check then full check
             (attacks_bb<ROOK> (dst_rook, (occ - org - org_rook + dst + dst_rook)) & ci.king_sq);
     }
-    else if (mt == PROMOTE)
+    else if (PROMOTE   == mt)
     {
         // Promotion with check ?
         return (attacks_bb (Piece (promote (m)), dst, occ - org + dst) & ci.king_sq);
     }
-    else if (mt == ENPASSANT)
+    else if (ENPASSANT == mt)
     {
         // En passant capture with check ?
         // already handled the case of direct checks and ordinary discovered check,
@@ -1193,6 +1173,10 @@ bool Position::can_en_passant (Square ep_sq) const
 
     return false;
 }
+//bool Position::can_en_passant (File   ep_f) const
+//{
+//    return can_en_passant (ep_f | rel_rank (_active, R_6));
+//}
 
 // compute_psq_score () computes the incremental scores for the middle
 // game and the endgame. These functions are used to initialize the incremental
@@ -1260,7 +1244,7 @@ void Position::do_move (Move m, StateInfo &n_si, const CheckInfo *ci)
     PieceT  ct = NONE;
 
     // Pick capture piece and check validation
-    if      (mt == NORMAL)
+    if      (NORMAL    == mt)
     {
         ASSERT (PAWN == (promote (m) - NIHT));
 
@@ -1275,14 +1259,14 @@ void Position::do_move (Move m, StateInfo &n_si, const CheckInfo *ci)
             ct = ptype (_board[cap]);
         }
     }
-    else if (mt == CASTLE)
+    else if (CASTLE    == mt)
     {
         ASSERT (KING == pt);
         ASSERT (ROOK == ptype (_board[dst]));
 
         ct = NONE;
     }
-    else if (mt == PROMOTE)
+    else if (PROMOTE   == mt)
     {
         ASSERT (PAWN == pt);        // Moving type must be PAWN
         ASSERT (R_7 == rel_rank (_active, org));
@@ -1291,7 +1275,7 @@ void Position::do_move (Move m, StateInfo &n_si, const CheckInfo *ci)
         ct = ptype (_board[cap]);
         ASSERT (PAWN != ct);
     }
-    else if (mt == ENPASSANT)
+    else if (ENPASSANT == mt)
     {
         ASSERT (PAWN == pt);                // Moving type must be pawn
         ASSERT (dst == _si->en_passant_sq); // Destination must be en-passant
@@ -1358,8 +1342,8 @@ void Position::do_move (Move m, StateInfo &n_si, const CheckInfo *ci)
     }
 
     // Do move according to move type
-    if      (mt == NORMAL
-        ||   mt == ENPASSANT)
+    if      (NORMAL  == mt
+        || ENPASSANT == mt)
     {
         // Move the piece
         move_piece (org, dst);
@@ -1376,7 +1360,7 @@ void Position::do_move (Move m, StateInfo &n_si, const CheckInfo *ci)
         
         _si->psq_score += PSQ[_active][pt][dst] - PSQ[_active][pt][org];
     }
-    else if (mt == CASTLE)
+    else if (CASTLE  == mt)
     {
         Square org_rook, dst_rook;
         do_castling<true>(org, dst, org_rook, dst_rook);
@@ -1387,7 +1371,7 @@ void Position::do_move (Move m, StateInfo &n_si, const CheckInfo *ci)
         _si->psq_score += PSQ[_active][KING][dst     ] - PSQ[_active][KING][org     ];
         _si->psq_score += PSQ[_active][ROOK][dst_rook] - PSQ[_active][ROOK][org_rook];
     }
-    else if (mt == PROMOTE)
+    else if (PROMOTE == mt)
     {
         PieceT ppt = promote (m);
         // Replace the PAWN with the Promoted piece
@@ -1424,7 +1408,7 @@ void Position::do_move (Move m, StateInfo &n_si, const CheckInfo *ci)
     _si->checkers = U64 (0);
     if (ci != NULL)
     {
-        if (mt == NORMAL)
+        if (NORMAL == mt)
         {
             // Direct check ?
             if (ci->checking_bb[pt] & dst)
@@ -1520,24 +1504,24 @@ void Position::undo_move ()
     _active = ~_active;
 
     MoveT mt = mtype (m);
-    ASSERT (empty (org) || (mt == CASTLE));
+    ASSERT (empty (org) || CASTLE == mt);
 
     ASSERT (KING != _si->capture_type);
 
     Square cap = dst;
 
     // Undo move according to move type
-    if      (mt == NORMAL)
+    if      (NORMAL    == mt)
     {
         move_piece (dst, org); // Put the piece back at the origin square
     }
-    else if (mt == CASTLE)
+    else if (CASTLE    == mt)
     {
         Square org_rook, dst_rook;
         do_castling<false>(org, dst, org_rook, dst_rook);
         //ct  = NONE;
     }
-    else if (mt == PROMOTE)
+    else if (PROMOTE   == mt)
     {
         ASSERT (promote (m) == ptype (_board[dst]));
         ASSERT (R_8 == rel_rank (_active, dst));
@@ -1547,7 +1531,7 @@ void Position::undo_move ()
         place_piece (org, _active, PAWN);
         //pt = PAWN;
     }
-    else if (mt == ENPASSANT)
+    else if (ENPASSANT == mt)
     {
         ASSERT (PAWN == ptype (_board[dst]));
         ASSERT (PAWN == _si->capture_type);

@@ -60,7 +60,6 @@ extern bool _ok (const std::string &fen, bool c960 = false, bool full = true);
 struct StateInfo
 {
 public:
-
     Value  non_pawn_matl[CLR_NO];
     Score  psq_score;
     Key    matl_key;       // Hash key of materials.
@@ -68,11 +67,11 @@ public:
     CRight castle_rights;  // Castling-rights information for both side.
     // "In passing" - Target square in algebraic notation.
     // If there's no en-passant target square is "-".
-    Square   en_passant_sq;
+    Square en_passant_sq;
     // Number of halfmoves clock since the last pawn advance or any capture.
     // used to determine if a draw can be claimed under the 50-move rule.
-    u08 clock50;
-    u08 null_ply;
+    u08    clock50;
+    u08    null_ply;
     // -------------------------------------
     Key    posi_key;       // Hash key of position.
     Move   last_move;      // Move played on the previous position.
@@ -81,7 +80,6 @@ public:
     Bitboard checkers;     // Checkers bitboard.
 
     StateInfo *p_si;
-
 };
 
 typedef std::stack<StateInfo>   StateInfoStack;
@@ -95,16 +93,13 @@ typedef std::stack<StateInfo>   StateInfoStack;
 struct CheckInfo
 {
 public:
-    
     Bitboard checking_bb[NONE]; // Checking squares from which the enemy king can be checked
     Bitboard pinneds;       // Pinned pieces
     Bitboard discoverers;   // Check discoverer pieces
     Square   king_sq;       // Enemy king square
 
     CheckInfo () {}
-
     explicit CheckInfo (const Position &pos);
-
 };
 
 // The position data structure. A position consists of the following data:
@@ -171,8 +166,8 @@ private:
     template<bool DO>
     void do_castling (Square org_king, Square &dst_king, Square &org_rook, Square &dst_rook);
 
-    //template<PieceT PT>
-    //PieceT least_valuable_attacker (Color c, Square dst, Bitboard &occupied) const;
+    template<PieceT PT>
+    PieceT least_valuable_attacker (Color c, Square dst, Bitboard &occupied) const;
 
 public:
 
