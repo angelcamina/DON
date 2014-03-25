@@ -27,11 +27,6 @@ namespace Threads {
 const u08 FEN_LEN     = 88;
 #endif
 
-// N-FEN (NATURAL-FEN)
-// "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
-// X-FEN (CHESS960-FEN) (Fischer Random Chess)
-// "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w HAha - 0 1"
-
 extern const std::string FEN_N;
 extern const std::string FEN_X;
 
@@ -166,6 +161,7 @@ private:
     template<bool DO>
     void do_castling (Square org_king, Square &dst_king, Square &org_rook, Square &dst_rook);
 
+
     template<PieceT PT>
     PieceT least_valuable_attacker (Color c, Square dst, Bitboard &occupied) const;
 
@@ -201,7 +197,6 @@ public:
     const Square* operator[] (Piece p)  const;
 
     bool empty     (Square s)   const;
-    //Piece piece_on (Square s)   const;
 
     Square king_sq (Color c)    const;
 
@@ -215,7 +210,6 @@ public:
     Bitboard pieces (PieceT p1, PieceT p2) const;
     Bitboard pieces (Color c, PieceT p1, PieceT p2) const;
     Bitboard pieces ()          const;
-    //Bitboard empties () const;
 
     i32      count  (Color c, PieceT pt)   const;
     template<PieceT PT>
@@ -245,7 +239,6 @@ public:
     Key posi_key_exclusion () const;
 
     Value non_pawn_material (Color c) const;    // Incremental piece-square evaluation
-    //Value     pawn_material (Color c) const;
 
     Score psq_score ()      const;
 
@@ -291,10 +284,8 @@ public:
     bool capture_or_promotion (Move m)    const;
     bool gives_check     (Move m, const CheckInfo &ci) const;
     bool gives_checkmate (Move m, const CheckInfo &ci) const;
-
-    Piece moved_piece (Move m)  const;
-
     bool advanced_pawn_push (Move m)      const;
+    Piece moved_piece (Move m)  const;
 
     bool passed_pawn  (Color c, Square s) const;
     bool pawn_on_7thR (Color c) const;
@@ -364,7 +355,6 @@ inline Bitboard      Position::operator[] (Color  c)  const { return _color_bb[c
 inline Bitboard      Position::operator[] (PieceT pt) const { return _types_bb[pt]; }
 inline const Square* Position::operator[] (Piece  p)  const { return _piece_list[color (p)][ptype (p)]; }
 INLINE bool     Position::empty   (Square s) const { return EMPTY == _board[s]; }
-//inline Piece    Position::piece_on(Square s) const { return          _board[s]; }
 inline Square   Position::king_sq (Color c)  const { return _piece_list[c][KING][0]; }
 inline Bitboard Position::pieces  (Color c)  const { return _color_bb[c];  }
 inline Bitboard Position::pieces  (PieceT pt)const { return _types_bb[pt]; }
@@ -376,7 +366,6 @@ inline Bitboard Position::pieces (Color c)            const { return _color_bb[c
 inline Bitboard Position::pieces (PieceT p1, PieceT p2)const { return _types_bb[p1]|_types_bb[p2]; }
 inline Bitboard Position::pieces (Color c, PieceT p1, PieceT p2) const { return _color_bb[c]&(_types_bb[p1]|_types_bb[p2]); }
 inline Bitboard Position::pieces ()                   const { return  _types_bb[NONE]; }
-//inline Bitboard Position::empties ()                  const { return ~_types_bb[NONE]; }
 inline i32 Position::count (Color c, PieceT pt)   const { return _piece_count[c][pt]; }
 template<PieceT PT>
 inline i32 Position::count (Color c) const { return _piece_count[c][PT]; }
@@ -439,6 +428,7 @@ inline bool Position::chess960  () const { return _chess960; }
 inline u64  Position::game_nodes() const { return _game_nodes; }
 inline void Position::game_nodes(u64 nodes){ _game_nodes = nodes; }
 inline Threads::Thread* Position::thread () const { return _thread; }
+
 //template<PieceT PT>
 //// Attacks of the PTYPE from the square
 //inline Bitboard Position::attacks_from (Square s) const
@@ -453,6 +443,7 @@ inline Threads::Thread* Position::thread () const { return _thread; }
 //        :  U64 (0);
 //}
 // Attackers to the square on given occ
+
 inline Bitboard Position::attackers_to (Square s, Bitboard occ) const
 {
     return (BitBoard::PawnAttacks[WHITE][s]    & _types_bb[PAWN]&_color_bb[BLACK])
@@ -522,9 +513,9 @@ inline bool Position::legal         (Move m) const { return legal (m, pinneds (_
 inline bool Position::capture       (Move m) const
 {
     MoveT mt = mtype (m);
-    return (NORMAL == mt || PROMOTE == mt)
+    return (mt == NORMAL || mt == PROMOTE)
         ?  !empty (dst_sq (m))
-        :  (ENPASSANT == mt)
+        :  (mt == ENPASSANT)
         ?  _ok (_si->en_passant_sq)
         :  false;
 }
@@ -532,17 +523,18 @@ inline bool Position::capture       (Move m) const
 inline bool Position::capture_or_promotion  (Move m) const
 {
     MoveT mt = mtype (m);
-    return (NORMAL == mt)
+    return (mt == NORMAL)
         ?  !empty (dst_sq (m))
-        :  (ENPASSANT == mt)
+        :  (mt == ENPASSANT)
         ?  _ok (_si->en_passant_sq)
-        :  (CASTLE != mt);
+        :  (mt != CASTLE);
 }
 inline bool Position::advanced_pawn_push    (Move m) const
 {
     return (PAWN == ptype (_board[org_sq (m)])) && (R_4 < rel_rank (_active, org_sq (m)));
 }
 inline Piece Position:: moved_piece (Move m) const { return _board[org_sq (m)]; }
+
 inline void  Position:: place_piece (Square s, Color c, PieceT pt)
 {
     ASSERT (empty (s));
